@@ -2,133 +2,359 @@
 
 #Initial variables
 config_dir="/etc/server-monitor/"
-server_list="${config_dir}servers.conf"
+server_monitor_conf="${config_dir}server-monitor.conf"
+server_list="${config_dir}servers"
+server_offline_list="${config_dir}offline_servers"
+notify_down_script="${config_dir}notify-down-script.sh"
+notify_up_script="${config_dir}notify-up-script.sh"
+ssl_key="${config_dir}ssl/server-monitor.key"
+ssl_cert="${config_dir}ssl/server-monitor.crt"
+applications_to_install="nginx php5-fpm openssl"
+notify_dir="${config_dir}website/notify/"
+
 ## Get public IP
 pub_ip=$(ip addr | grep 'inet' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | grep -o -E '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -1)
 if [[ "$pub_ip" = "" ]]; then
 		pub_ip=$(wget -4qO- "http://whatismyip.akamai.com/")
 fi
 
-#SETUP
-## Check if valid OS
-if [[ -e /etc/debian_version ]]; then
-	OS=debian
-elif [[ -e /etc/centos-release || -e /etc/redhat-release ]]; then
-	OS=centos
-else
-	echo "Looks like you aren't running this installer on a Debian, Ubuntu or CentOS system"
-	exit 5
-fi
+#FUNCTIONS
+function setUpAlertTimes(){
+    # Alerts
+    ## for first hour
+    read -p "Alerts every (x minute) for first hour: " -e -i 1 first_hour
+    ## after first hour
+    read -p "Alerts every (x minute) after first hour: " -e -i 30 after_first_hour
+}
 
-## Install packages
-if [[ "$OS" = 'debian' ]]; then
-    apt-get update
-    apt-get install -y nginx php5-fpm openssl
-else
-    yum update
-    yum install -y nginx php5-fpm openssl
-fi
+function getArrayOfServers(){
+    oldIFS="$IFS"
+    IFS=$'\n'
+    new_server_list="$(sed '/^#/ d' "$server_list")"
+    server_arr=($"$new_server_list")
+    IFS="$oldIFS"
 
-## Check if server is behind NAT
-IP=$(wget -4qO- "http://whatismyip.akamai.com/")
-if [[ "$pub_ip" != "$IP" ]]; then
-		echo -e "\nYour server may be behind a NAT!\n"
-		echo -e "\nIf your server is NATed (e.g. LowEndSpirit), I need to know the external IP and an available port for the web server"
-		read -p "External IP: " -e USEREXTERNALIP
-		if [[ "$USEREXTERNALIP" != "" ]]; then
-			pub_ip=$USEREXTERNALIP
-		fi
-fi
+    #remove server keys
+    server_cnt=${#server_arr[@]}
+    for ((i=0;i<server_cnt;i++)); do
+        server_arr[i]="${server_arr[i]%\|*}" #removes string after and including the '|' symbol - the keys
+    done
+}
+#INITIAL SETUP
+if [ ! -f "$server_monitor_conf" ]; then #will do setup if conf file does not exist
+    ## Check if valid OS
+    if [[ -e /etc/debian_version ]]; then
+        OS=debian
+    elif [[ -e /etc/centos-release || -e /etc/redhat-release ]]; then
+        OS=centos
+    else
+        echo "Looks like you aren't running this installer on a Debian, Ubuntu or CentOS system"
+        exit 5
+    fi
 
-## Ask port number
-echo -e "\nPlease choose a port for your NGINX webserver to be installed on"
-read -p "Port: " -e -i 443 port
+    ## Create script folder
+    mkdir -p "${config_dir}"
 
-## Setup NGINX
-### Setup ssl
-mkdir /etc/nginx/ssl
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/nginx/ssl/nginx.key -out /etc/nginx/ssl/nginx.crt
+    ## Install packages
+    if [[ "$OS" = 'debian' ]]; then
+        apt-get update
+        apt-get install -y $applications_to_install
+    else
+        yum update
+        yum install -y $applications_to_install
+    fi
 
-### Setup NGINX config
-echo -e "server {
-        listen 80 default_server;
+    ## Check if server is behind NAT
+    IP=$(wget -4qO- "http://whatismyip.akamai.com/")
+    if [[ "$pub_ip" != "$IP" ]]; then
+            echo -e "\nYour server may be behind a NAT!\n"
+            echo -e "\nIf your server is NATed (e.g. LowEndSpirit), I need to know the external IP and an available port for the web server"
+            read -p "External IP: " -e USEREXTERNALIP
 
-        listen $port ssl;
+            if [[ $USEREXTERNALIP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+            then
+                # is valid IP
+                pub_ip=$USEREXTERNALIP
+            fi
 
-        root ${config_dir}website/;
-        index.php;
+    fi
 
-        server_name $pub_ip;
-        ssl_certificate /etc/nginx/ssl/nginx.crt;
-        ssl_certificate_key /etc/nginx/ssl/nginx.key;
+    ## Ask port number
+    read -p "Port for NGINX web-server to use: " -e -i 443 port
 
-        location / {
-            try_files \$uri \$uri/ =404;
-        }
+    ## setup conf
+    echo -e "ip=$pub_ip
+port=$port
+first_hour=1
+after_hour=60" > "$server_monitor_conf"
 
-        location ~ \.php$ {
-            try_files \$uri =404;
-            fastcgi_pass unix:/var/run/php5-fpm.sock;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-            include fastcgi_params;
-        }
+    ## Setup NGINX
+    ### Setup ssl
+    #### Create ssl folder
+    mkdir -p "${config_dir}ssl"
+    #### Create ssl certificates
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout "${ssl_key}" -out "${ssl_cert}"
+
+    ### Setup NGINX config
+    echo -e "server {
+    listen $port ssl;
+
+    root ${config_dir}website/;
+
+    server_name $pub_ip;
+    ssl_certificate ${ssl_cert};
+    ssl_certificate_key ${ssl_key};
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location ~ \.php$ {
+        try_files \$uri =404;
+        fastcgi_pass unix:/var/run/php5-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
 }" > /etc/nginx/sites-enabled/server-monitor
-ln -s /etc/nginx/sites-enabled/server-monitor /etc/nginx/sites-available/server-monitor
+    ln -s /etc/nginx/sites-enabled/server-monitor /etc/nginx/sites-available/server-monitor
 
-## file setup
-mkdir -p "${config_dir}website/"
-echo -e "# DO NOT EDIT THIS FILE!
+    ## scripts setup
+    ### Create website folder and notify folder
+    mkdir -p "$notify_dir"
+    chown www-data:www-data "$notify_dir" #allow php to write to folder
+
+    ### Create file to list servers
+    echo -e "# DO NOT EDIT THIS FILE!
 # USE THE server-monitor.sh SCRIPT
-" > "$server_list"
+# THIS SCRIPT IS TO LIST ALL SERVERS TO LISTEN OUT FOR" > "$server_list"
 
-### PHP incoming file
-echo -e "<?php
+    ### Create file to list down servers
+    echo -e "# DO NOT EDIT THIS FILE!
+# USE THE server-monitor.sh SCRIPT
+# THIS SCRIPT IS TO LIST CURRENTLY DOWN SERVERS" > "$server_offline_list"
+
+    ### PHP incoming file
+    echo -e "<?php
 \$key = \$_GET['key'];
 
-include 'server_keys.php';
+//get servers array
+\$handle = fopen('${server_list}', \"r\");
+if (\$handle) {
+    while ((\$line = fgets(\$handle)) !== false) {
+        if(substr(\$line, 0, 1) != \"#\") { //not lines that start with comment
+            \$exp = explode(\"|\", \$line);
+            \$server = trim(\$exp[0]);
+            \$this_key = trim(\$exp[1]);
+            if(\$this_key == \$key){
+                    \$myfile = fopen('${notify_dir}'.\$key, \"w\") or die(\"Unable to open file!\");
+                    fwrite(\$myfile, date(\"Y-m-d H:i:s\"));
+                    fclose(\$myfile);
+                    echo \"1\";
+            }
+        }
+    }
+    fclose(\$handle);
+}" > "${config_dir}website/notify.php"
 
-if(in_array(\$key,\$servers)){
-        \$myfile = fopen('${config_dir}website/notify/'.\$key, \"w\") or die(\"Unable to open file!\");
-        fwrite(\$myfile, date(\"Y-m-d H:i:s\"));
-        fclose(\$myfile);
-        echo \"1\";
-}
-" > "${config_dir}website/notify.php"
+    ### PHP notify file
+    echo -e "<?php
+\$offline_file = '${server_offline_list}';
 
-### PHP server file
-echo -e '<?php
-$servers = array(
-);
-' > "${config_dir}website/server_keys.php"
+\$handle = fopen('${server_list}', \"r\");
+if (\$handle) {
+    while ((\$line = fgets(\$handle)) !== false) {
+        if(substr(\$line, 0, 1) != \"#\") { //not lines that start with comment
+            \$exp = explode(\"|\", \$line);
+            \$server = trim(\$exp[0]);
+            \$this_key = trim(\$exp[1]);
 
-### PHP notifi file
-echo -e '<?php
-$servers = array(
-);
-' > "${config_dir}website/server_keys.php"
+            \$path = '${notify_dir}'.\$this_key;
+            \$myfile = fopen(\$path, \"r\");
+            \$time = fread(\$myfile,filesize(\$path));
+            fclose(\$myfile);
+
+            \$start_date = new DateTime(\$time);
+            \$since_start = \$start_date->diff(new DateTime());
+
+            \$days = \$since_start->days;
+            \$hours = \$since_start->h;
+            \$mins = \$since_start->i;
+            if(\$days > 0){
+                    \$hours = \$hours + (\$days*24);
+            }
+
+            \$server = key(\$servers);
+            echo \"mins: \$mins hours: \$hours\";
+            if(\$mins <= 1 && \$hours == 0){
+                    //ONLINE
+                    if( strpos(file_get_contents(\$offline_file),\$server.\"|\") !== false) {
+                        shell_exec("sudo ${notify_up_script} \"\$server\"");
+
+                        //delete \$server from offline list
+                        \$contents = file_get_contents(\$offline_file);
+                        \$contents = str_replace(\$server.PHP_EOL, '', \$contents);
+                        file_put_contents(\$offline_file, \$contents);
+                    }
+            }
+            }else /* rules */{
+                //OFFLINE
+                shell_exec("sudo ${notify_down_script} \"\$server\" \"\$hours:\$mins\"");
+                if( strpos(file_get_contents(\$offline_file),\$server) === false) {
+                        //add \$server to offline list
+                        file_put_contents(\$offline_file, \$server.PHP_EOL , FILE_APPEND | LOCK_EX);
+                }
+            }
+        }
+    }
+    fclose(\$handle);
+}" > "${config_dir}website/check.php"
+
+    ### Notify script
+    #### Down script
+    echo "#!/bin/bash
+# SERVER IS DOWN - SCRIPT
+# initial variables
+server=\$1
+down_time=\$2
+
+# EXAMPLE CODE
+echo \"\$server has been down for \$down_time\" >> \"${config_dir}uptime.log\" " > "$notify_down_script"
+
+#### Down script
+    echo "#!/bin/bash
+# SERVER IS BACK UP - SCRIPT
+# initial variables
+server=\$1
+
+# EXAMPLE CODE
+echo \"\$server is back up!\" >> \"${config_dir}uptime.log\" " > "$notify_up_script"
+
+#add cron
+(crontab -u root -l ; echo "* * * * * php '${config_dir}website/check.php'") | crontab -u root -
+
+#END OF SETUP
+fi
 
 echo -e "Would you like to?"
-echo -e "\t1) Add a new server"
-echo -e "\t2) Delete a server"
-echo -e "\t3) Remove Server Monitor config"
-echo -e "\t4) Exit"
+echo -e "\t1) Add a new server monitor"
+echo -e "\t2) Remove a server monitor"
+echo -e "\t3) Show server status"
+echo -e "\t4) Notify scripts"
+echo -e "\t5) Notify times"
+echo -e "\t6) Remove Server Monitor"
+echo -e "\t7) Exit"
 
-read -p "Choose option [1-3]: " option
+read -p "Choose option [1-7]: " option
 case $option in
     1)
-        read -p "Server name: " -e SERVER_NAME
-        ran_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 40 | head -n 1)
-        echo -e "$SERVER_NAME|$ran_string" >> "$server_list"
-        echo -e "Curl please"
+        read -p "Server name: " -e server_name
+        server_name="${server_name//\|}" #remove '|' char from server_name variable
+        #generate random 40 char key
+        key_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 40 | head -n 1)
+
+        # Check if server not already registered
+        getArrayOfServers #returns $server_arr and $server_cnt
+        for ((i=0;i<server_cnt;i++)); do
+            if [[ "${server_arr[i]}" == "$server_name" ]]
+            then
+                echo "Already registered the server named $server_name!"
+                exit
+            fi
+        done
+
+        #store server config in file
+        echo -e "$server_name|$key_string" >> "$server_list"
+
+        #get ip and port from config
+        ip=$(grep --only-matching --perl-regex "(?<=ip\=).*" $server_monitor_conf)
+        port=$(grep --only-matching --perl-regex "(?<=port\=).*" $server_monitor_conf)
+
+        #get result from server
+        echo "Add this to your crontab on the server '$server_name':"
+        echo "*       *       *       *       *       /usr/bin/curl --insecure https://$ip:$port/notify.php?key=$key_string"
     ;;
     2)
-    echo "Delete server"
+        #List Servers
+        getArrayOfServers #returns $server_arr and $server_cnt
+        if [ "$server_cnt" -eq "0" ]; then
+            echo "No servers configured!"
+            exit
+        else
+            for ((i=0;i<server_cnt;i++)); do
+                echo "$((i+1))) ${server_arr[i]}"
+            done
+        fi
+
+        #pick server
+        read -p "Enter # of server to delete: " -e server_num
+        actual_server_num=$((server_num-1))
+        if [ ${actual_server_num} -gt -1 ]; then
+
+            server_name="${server_arr[$actual_server_num]}"
+            if [[ "$server_name" != "" ]]
+            then
+                echo "Deleting $server_name"
+                #delete server from $server_list
+                sed -i "/^${server_name}|/d" "$server_list"
+                exit
+            fi
+        fi
+
+        echo "No such server!"
     ;;
     3)
-    echo "Remove Server Monitor config"
+        # Server status
+        getArrayOfServers #returns $server_arr and $server_cnt
+        if [ "$server_cnt" -eq "0" ]; then
+            echo "No servers configured!"
+        else
+            for ((i=0;i<server_cnt;i++)); do
+                color="\e[32m" #make text green
+                while read line
+                do
+                    if [[ "$line" == "${server_arr[i]}" ]]
+                    then
+                        color="\e[31m"  #overwrite to text red
+                    fi
+                done < "$server_offline_list"
+
+                echo -e "${color}${server_arr[i]}\e[0m"
+            done
+        fi
     ;;
     4)
-    exit
+        # Notify scripts
+        nano "$notify_down_script"
+        nano "$notify_up_script"
+    ;;
+    5)
+        #TODO get current times from conf
+        f_h=1
+        a_h=60
+
+        # Notify times
+        read -p "Every x minute(s) (for first hour): " -e -i ${f_h} first_hour
+        read -p "Every x minute(s) (after first hour): " -e -i ${a_h} after_hour
+
+        #update config
+        sed -i "s|\("first_hour"*=*\).*|first_hour=$first_hour|" "$server_monitor_conf"
+        sed -i "s|\("after_hour"*=*\).*|after_hour=$after_hour|" "$server_monitor_conf"
+    ;;
+    6)
+        # Remove server monitor
+        echo "Uninstalling applications"
+        apt-get remove -y $applications_to_install --purge
+
+        echo "Removing files"
+        rm -rf "$config_dir"
+        #remove nginx files
+        rm /etc/nginx/sites-enabled/server-monitor /etc/nginx/sites-available/server-monitor
+
+        #remove cron
+        crontab -u root -l | grep -v "'${config_dir}website/check.php'"  | crontab -u root -
+    ;;
+    7)
+        exit
     ;;
 esac
