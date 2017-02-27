@@ -18,3 +18,5 @@ Would you like to?
 ```
 
 Adding a new server will supply you with a key to curl every minute (using cron) from another server. The server that uses this script will then monitor to check the curl has been made.
+
+<img src="https://i.imgur.com/RAClgkZ.png">
