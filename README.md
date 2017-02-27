@@ -1,4 +1,4 @@
-# Server-Monitor
+# server-monitor.sh
 
 This script creates an NGINX webserver with a PHP backend.
 
