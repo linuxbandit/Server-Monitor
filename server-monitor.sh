@@ -115,7 +115,7 @@ if [ ! -f "$server_monitor_conf" ]; then #will do setup if conf file does not ex
     setEquals "ip" "$pub_ip" "$server_monitor_conf"
     setEquals "port" "$port" "$server_monitor_conf"
     setEquals "first_hour" "1" "$server_monitor_conf"
-    setEquals "after_hour" "60" "$server_monitor_conf"
+    setEquals "after_hour" "30" "$server_monitor_conf"
 
     ## Setup NGINX
     ### Setup ssl
@@ -334,168 +334,169 @@ echo \"\$server is back up!\" >> \"${config_dir}uptime.log\"
     service nginx restart
 
     echo -e "\e[32mSuccess! Run script again to add servers and more!\e[0m"
-exit
+
 fi #END OF SETUP
 
 #initial variables
 pad=20
 
-clear
+while :
+do
+    echo -e "Would you like to?"
+    echo -e "\t1) Add a new server monitor"
+    echo -e "\t2) Remove a server monitor"
+    echo -e "\t3) Show server status"
+    echo -e "\t4) Edit notification scripts"
+    echo -e "\t5) Choose notification times"
+    echo -e "\t6) Uninstall Server Monitor"
+    echo -e "\t7) Exit"
 
-echo -e "Would you like to?"
-echo -e "\t1) Add a new server monitor"
-echo -e "\t2) Remove a server monitor"
-echo -e "\t3) Show server status"
-echo -e "\t4) Notify scripts"
-echo -e "\t5) Notify times"
-echo -e "\t6) Uninstall Server Monitor"
-echo -e "\t7) Exit"
+    read -p "Choose option [1-7]: " option
+    case $option in
+        1)
+            clear
+            # add new server
+            ok=0
+            while [ $ok = 0 ]
+            do
+                read -p "Server name: " -e server_name
+                server_name=$(clean "$server_name")
+                if [[ ${#server_name} -gt $pad || 1 -gt ${#server_name} ]]
+                then
+                    echo -e "\e[31mERROR:\e[0m Server name has to be 1 - $pad characters. You entered ${#server_name}!"
+                else
+                    ok=1
+                fi
+            done
+            #generate random 40 char key
+            key_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 40 | head -n 1)
 
-read -p "Choose option [1-7]: " option
-case $option in
-    1)
-        # add new server
-        ok=0
-        while [ $ok = 0 ]
-        do
-            read -p "Server name: " -e server_name
-            server_name=$(clean "$server_name")
-            if [[ ${#server_name} -gt $pad || 1 -gt ${#server_name} ]]
-            then
-                echo -e "\e[31mERROR:\e[0m Server name has to be 1 - $pad characters. You entered ${#server_name}!"
+            # Check if server not already registered
+            getArrayOfServers #returns $server_arr and $server_cnt
+            for ((i=0;i<server_cnt;i++)); do
+                if [[ "${server_arr[i]}" == "$server_name" ]]
+                then
+                    echo -e "\e[31mAlready registered the server named $server_name!\e[0m"
+                fi
+            done
+
+            #store server config in file
+            echo -e "$server_name|$key_string" >> "$server_list"
+
+            #get ip and port from config
+            ip=$(getEquals "ip" "$server_monitor_conf")
+            port=$(getEquals "port" "$server_monitor_conf")
+
+            #get result from server
+            echo "Add to the crontab on your server '$server_name':"
+            echo -e "\e[32m*       *       *       *       *       curl --insecure https://$ip:$port/notify.php?key=$key_string\e[0m"
+            echo "WARNING: Monitor will not start until first successful curl."
+        ;;
+        2)
+            clear
+            #List Servers
+            getArrayOfServers #returns $server_arr and $server_cnt
+            if [ "$server_cnt" -eq "0" ]; then
+                echo "No servers configured!"
             else
-                ok=1
+                for ((i=0;i<server_cnt;i++)); do
+                    echo "$((i+1))) ${server_arr[i]}"
+                done
             fi
-        done
-        #generate random 40 char key
-        key_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 40 | head -n 1)
 
-        # Check if server not already registered
-        getArrayOfServers #returns $server_arr and $server_cnt
-        for ((i=0;i<server_cnt;i++)); do
-            if [[ "${server_arr[i]}" == "$server_name" ]]
-            then
-                echo -e "\e[31mAlready registered the server named $server_name!\e[0m"
-                exit
+            #pick server
+            read -p "Enter # of server to delete: " -e server_num
+            actual_server_num=$((server_num-1))
+            if [ ${actual_server_num} -gt -1 ]; then
+                server_name="${server_arr[$actual_server_num]}"
+                if [[ "$server_name" != "" ]]
+                then
+                    #delete server from $server_list
+                    sed -i "/^${server_name}|/d" "$server_list"
+                    echo -e "\e[31mDeleted: $server_name\e[0m"
+                fi
             fi
-        done
+        ;;
+        3)
+            clear
+            # Server status
+            echo "Checking servers...";
+            $(which php) "${config_dir}website/check.php" &>/dev/null
 
-        #store server config in file
-        echo -e "$server_name|$key_string" >> "$server_list"
-
-        #get ip and port from config
-        ip=$(getEquals "ip" "$server_monitor_conf")
-        port=$(getEquals "port" "$server_monitor_conf")
-
-        #get result from server
-        echo "Add to the crontab on your server '$server_name':"
-        echo -e "\e[32m*       *       *       *       *       curl --insecure https://$ip:$port/notify.php?key=$key_string\e[0m"
-        echo "WARNING: Monitor will not start until first successful curl."
-    ;;
-    2)
-        #List Servers
-        getArrayOfServers #returns $server_arr and $server_cnt
-        if [ "$server_cnt" -eq "0" ]; then
-            echo "No servers configured!"
-            exit
-        else
-            for ((i=0;i<server_cnt;i++)); do
-                echo "$((i+1))) ${server_arr[i]}"
-            done
-        fi
-
-        #pick server
-        read -p "Enter # of server to delete: " -e server_num
-        actual_server_num=$((server_num-1))
-        if [ ${actual_server_num} -gt -1 ]; then
-
-            server_name="${server_arr[$actual_server_num]}"
-            if [[ "$server_name" != "" ]]
-            then
-                #delete server from $server_list
-                sed -i "/^${server_name}|/d" "$server_list"
-                echo -e "\e[31mDeleted: $server_name\e[0m"
-                exit
-            fi
-        fi
-
-        echo "No such server!"
-    ;;
-    3)
-        # Server status
-        echo "Checking servers...";
-        $(which php) "${config_dir}website/check.php" &>/dev/null
-
-        getArrayOfServers #returns $server_arr, $key_arr and $server_cnt
-        if [ "$server_cnt" -eq "0" ]; then
-            echo "No servers configured!"
-        else
-            padding="-$pad"
-            printf "\e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m\n\n" "Server" "Status" "Last Notification" "Key"
-            for ((i=0;i<server_cnt;i++)); do
-                while read line
-                do
-                    info="Online"
-                    color="\e[32m" #make text green
-                    last_notification="< 1 min ago"
-                    if [ -a "${notify_dir}${key_arr[i]}" ]
-                    then
-                        if [[ "$line" == "${server_arr[i]}" ]]
+            getArrayOfServers #returns $server_arr, $key_arr and $server_cnt
+            if [ "$server_cnt" -eq "0" ]; then
+                echo "No servers configured!"
+            else
+                padding="-$pad"
+                printf "\e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m \e[4m%${padding}s\e[0m\n\n" "Server" "Status" "Last Notification" "Key"
+                for ((i=0;i<server_cnt;i++)); do
+                    while read line
+                    do
+                        info="Online"
+                        color="\e[32m" #make text green
+                        last_notification="< 1 min ago"
+                        if [ -a "${notify_dir}${key_arr[i]}" ]
                         then
-                            color="\e[31m"  #overwrite to text red
-                            info="Offline  "
-                            last_notification="$(cat "${notify_dir}${key_arr[i]}")"
+                            if [[ "$line" == "${server_arr[i]}" ]]
+                            then
+                                color="\e[31m"  #overwrite to text red
+                                info="Offline  "
+                                last_notification="$(cat "${notify_dir}${key_arr[i]}")"
+                            fi
+                        else
+                            color="\e[33m"
+                            info="No activity"
+                            last_notification="N/A"
                         fi
-                    else
-                        color="\e[33m"
-                        info="No activity"
-                        last_notification="N/A"
-                    fi
-                done < "$server_offline_list"
-                #printf "${color}${server_arr[i]}\e[0m $info $last_notification ${key_arr[i]}"
-                printf "${color}%${padding}s\e[0m %${padding}s %${padding}s %${padding}s\n" "${server_arr[i]}" "$info" "$last_notification" "${key_arr[i]}"
-            done
-        fi
-    ;;
-    4)
-        # Edit notify scripts
-        nano "$notify_down_script"
-        nano "$notify_up_script"
-    ;;
-    5)
-        f_h=$(getEquals "first_hour" "$server_monitor_conf")
-        a_h=$(getEquals "after_hour" "$server_monitor_conf")
+                    done < "$server_offline_list"
+                    #printf "${color}${server_arr[i]}\e[0m $info $last_notification ${key_arr[i]}"
+                    printf "${color}%${padding}s\e[0m %${padding}s %${padding}s %${padding}s\n" "${server_arr[i]}" "$info" "$last_notification" "${key_arr[i]}"
+                done
+            fi
+        ;;
+        4)
+            clear
+            # Edit notify scripts
+            nano "$notify_down_script"
+            nano "$notify_up_script"
+        ;;
+        5)
+            clear
+            f_h=$(getEquals "first_hour" "$server_monitor_conf")
+            a_h=$(getEquals "after_hour" "$server_monitor_conf")
 
-        # Notify times
-        read -p "Every x minute(s) (for first hour): " -e -i "${f_h}" first_hour
-        read -p "Every x minute(s) (after first hour): " -e -i "${a_h}" after_hour
+            # Notify times
+            read -p "Every x minute(s) (for first hour): " -e -i "${f_h}" first_hour
+            read -p "Every x minute(s) (after first hour): " -e -i "${a_h}" after_hour
 
-        #update config
-        setEquals "first_hour" "$first_hour" "$server_monitor_conf"
-        setEquals "after_hour" "$after_hour" "$server_monitor_conf"
-    ;;
-    6)
-        # Remove server monitor
+            #update config
+            setEquals "first_hour" "$first_hour" "$server_monitor_conf"
+            setEquals "after_hour" "$after_hour" "$server_monitor_conf"
+        ;;
+        6)
+            clear
+            # Remove server monitor
 
-        read -p "Are you sure? This is unrecoverable. [Y/N]: " -e RUsure
-        if [[ "$RUsure" == "Y" || "$RUsure" == "y" ]]
-        then
-            rm -rf "$config_dir"
-            #remove nginx files
-            rm /etc/nginx/sites-enabled/server-monitor /etc/nginx/sites-available/server-monitor
-            service nginx restart
+            read -p "Are you sure? This is unrecoverable. [Y/N]: " -e RUsure
+            if [[ "$RUsure" == "Y" || "$RUsure" == "y" ]]
+            then
+                rm -rf "$config_dir"
+                #remove nginx files
+                rm /etc/nginx/sites-enabled/server-monitor /etc/nginx/sites-available/server-monitor
+                service nginx restart
 
-            #remove cron
-            crontab -u root -l | grep -v "'${config_dir}website/check.php'"  | crontab -u root -
+                #remove cron
+                crontab -u root -l | grep -v "'${config_dir}website/check.php'"  | crontab -u root -
 
-            echo -e "Done!\n"
-            echo "If you would like to uninstall the applications run:"
-            echo "apt-get remove -y $applications_to_install --purge"
-        else
-            echo "Canceled."
-        fi
-    ;;
-    7)
-        exit
-    ;;
-esac
+                echo -e "Done!\n"
+                echo "If you would like to uninstall the applications run:"
+                echo "apt-get remove -y $applications_to_install --purge"
+            else
+                echo "Canceled."
+            fi
+        ;;
+        7)
+            exit
+        ;;
+    esac
+done
